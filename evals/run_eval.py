@@ -18,8 +18,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-import httpx
-
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_EVAL_FILE = ROOT / "evals" / "eval_set.jsonl"
 DEFAULT_OUT_FILE = ROOT / "results" / "eval_baseline.json"
@@ -58,7 +56,69 @@ def matches(gold_rows: list[tuple] | None, pred_rows: list[tuple] | None) -> boo
 
 def eval_one(question: dict, agent_url: str) -> dict:
     """Score one question. Return a dict capturing per-iteration correctness."""
-    raise NotImplementedError("Phase 5")
+    import httpx
+
+    payload = {
+        "question": question["question"],
+        "db": question["db_id"],
+        "tags": {"phase": "eval", "db_id": question["db_id"]},
+    }
+    t0 = time.monotonic()
+    try:
+        response = httpx.post(agent_url, json=payload, timeout=180.0)
+        response.raise_for_status()
+        agent = response.json()
+        agent_error = None
+    except Exception as e:  # noqa: BLE001
+        agent = {}
+        agent_error = f"{type(e).__name__}: {e}"
+    latency = time.monotonic() - t0
+
+    gold_ok, gold_rows, gold_error = run_sql(question["db_id"], question["gold_sql"])
+    final_sql = agent.get("sql", "")
+    pred_ok, pred_rows, pred_error = run_sql(question["db_id"], final_sql) if final_sql else (False, None, "empty SQL")
+
+    attempts: list[dict] = []
+    seen_sql: set[str] = set()
+    for item in agent.get("history", []):
+        if item.get("node") not in {"generate_sql", "revise"}:
+            continue
+        sql = str(item.get("sql", "")).strip()
+        if not sql or sql in seen_sql:
+            continue
+        seen_sql.add(sql)
+        ok, rows, error = run_sql(question["db_id"], sql)
+        attempts.append({
+            "iteration": len(attempts) + 1,
+            "sql": sql,
+            "execution_ok": ok,
+            "execution_error": error,
+            "correct": gold_ok and matches(gold_rows, rows),
+        })
+
+    if final_sql and (not attempts or attempts[-1]["sql"] != final_sql):
+        attempts.append({
+            "iteration": len(attempts) + 1,
+            "sql": final_sql,
+            "execution_ok": pred_ok,
+            "execution_error": pred_error,
+            "correct": gold_ok and matches(gold_rows, pred_rows),
+        })
+
+    return {
+        "question": question["question"],
+        "db_id": question["db_id"],
+        "gold_sql": question["gold_sql"],
+        "gold_execution_ok": gold_ok,
+        "gold_error": gold_error,
+        "final_sql": final_sql,
+        "final_execution_ok": pred_ok,
+        "final_error": agent_error or pred_error,
+        "correct": gold_ok and matches(gold_rows, pred_rows),
+        "agent_iterations": agent.get("iterations", 0),
+        "latency_seconds": latency,
+        "attempts": attempts,
+    }
 
 
 def summarize(results: list[dict]) -> dict:
@@ -70,7 +130,42 @@ def summarize(results: list[dict]) -> dict:
     The agent stopped emitting; whatever it had at termination is what
     would have been served had we polled at iteration k.
     """
-    raise NotImplementedError("Phase 5")
+    total = len(results)
+    correct = sum(1 for r in results if r.get("correct"))
+    max_iter = max((len(r.get("attempts", [])) for r in results), default=0)
+
+    per_iteration: dict[str, dict] = {}
+    for i in range(1, max_iter + 1):
+        n_correct = 0
+        for r in results:
+            attempts = r.get("attempts", [])
+            if not attempts:
+                continue
+            idx = min(i, len(attempts)) - 1
+            n_correct += 1 if attempts[idx].get("correct") else 0
+        per_iteration[str(i)] = {
+            "correct": n_correct,
+            "total": total,
+            "accuracy": (n_correct / total) if total else 0.0,
+        }
+
+    latencies = sorted(r.get("latency_seconds", 0.0) for r in results)
+
+    def pct(p: float) -> float:
+        if not latencies:
+            return 0.0
+        k = int(round(p * (len(latencies) - 1)))
+        return latencies[k]
+
+    return {
+        "total": total,
+        "correct": correct,
+        "accuracy": (correct / total) if total else 0.0,
+        "per_iteration": per_iteration,
+        "agent_errors": sum(1 for r in results if r.get("final_error") and not r.get("final_execution_ok")),
+        "latency_p50_seconds": pct(0.50),
+        "latency_p95_seconds": pct(0.95),
+    }
 
 
 # ---------- Main (provided) --------------------------------------------

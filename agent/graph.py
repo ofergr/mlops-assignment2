@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -81,6 +82,49 @@ def _extract_sql(text: str) -> str:
     return (fenced.group(1) if fenced else text).strip()
 
 
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Parse the first JSON object from a model reply."""
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    candidate = (fenced.group(1) if fenced else text).strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if not match:
+            return {"ok": False, "issue": f"Verifier returned non-JSON: {text[:200]}"}
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {"ok": False, "issue": f"Verifier returned invalid JSON: {text[:200]}"}
+    return parsed if isinstance(parsed, dict) else {"ok": False, "issue": "Verifier JSON was not an object"}
+
+
+def _heuristic_verify_issue(state: AgentState) -> str:
+    """Catch simple mismatches that small local models often miss."""
+    if state.execution is None:
+        return "No execution result was produced."
+    if not state.execution.ok:
+        return state.execution.error or "SQL execution failed."
+
+    question = state.question.lower()
+    columns = {c.lower() for c in (state.execution.columns or [])}
+    sql = state.sql.lower()
+
+    if "coordinate" in question or "latitude" in question or "longitude" in question:
+        has_lat_lng = {"lat", "lng"}.issubset(columns) or ("lat" in sql and "lng" in sql)
+        has_lat_lon = {"lat", "lon"}.issubset(columns) or ("lat" in sql and "lon" in sql)
+        if not (has_lat_lng or has_lat_lon):
+            return "The question asks for coordinates, but the SQL does not return latitude/longitude columns."
+
+    rows = state.execution.rows or []
+    if len(rows) > 1 and len(set(rows)) < len(rows):
+        duplicate_sensitive = not any(term in question for term in ("count", "number of", "how many", "per ", "each "))
+        if duplicate_sensitive and "distinct" not in sql:
+            return "The result contains duplicate answer rows; use DISTINCT or otherwise deduplicate the final answer."
+
+    return ""
+
+
 def generate_sql_node(state: AgentState) -> dict:
     """Worked example - the other LLM nodes follow this same shape.
 
@@ -124,7 +168,32 @@ def verify_node(state: AgentState) -> dict:
     What counts as "not plausible" is yours to define - see the Phase 3 targets
     in the README.
     """
-    raise NotImplementedError("Implement in Phase 3")
+    execution_text = state.execution.render() if state.execution else "No execution result."
+    response = llm().invoke([
+        ("system", prompts.VERIFY_SYSTEM),
+        ("user", prompts.VERIFY_USER.format(
+            schema=state.schema,
+            question=state.question,
+            sql=state.sql,
+            execution=execution_text,
+        )),
+    ])
+    parsed = _extract_json_object(response.content)
+    heuristic_issue = _heuristic_verify_issue(state)
+    ok = bool(parsed.get("ok", False)) and not heuristic_issue
+    issue = heuristic_issue or ("" if ok else str(parsed.get("issue") or "Verifier rejected the result."))
+    return {
+        "verify_ok": ok,
+        "verify_issue": issue,
+        "history": state.history + [{
+            "node": "verify",
+            "ok": ok,
+            "issue": issue,
+            "sql": state.sql,
+            "execution_ok": state.execution.ok if state.execution else False,
+            "row_count": state.execution.row_count if state.execution else 0,
+        }],
+    }
 
 
 def revise_node(state: AgentState) -> dict:
@@ -137,7 +206,23 @@ def revise_node(state: AgentState) -> dict:
 
     Return: {"sql": <str>, "iteration": state.iteration + 1, ...}.
     """
-    raise NotImplementedError("Implement in Phase 3")
+    execution_text = state.execution.render() if state.execution else "No execution result."
+    response = llm().invoke([
+        ("system", prompts.REVISE_SYSTEM),
+        ("user", prompts.REVISE_USER.format(
+            schema=state.schema,
+            question=state.question,
+            sql=state.sql,
+            execution=execution_text,
+            issue=state.verify_issue,
+        )),
+    ])
+    sql = _extract_sql(response.content)
+    return {
+        "sql": sql,
+        "iteration": state.iteration + 1,
+        "history": state.history + [{"node": "revise", "sql": sql, "issue": state.verify_issue}],
+    }
 
 
 def route_after_verify(state: AgentState) -> str:
@@ -146,7 +231,9 @@ def route_after_verify(state: AgentState) -> str:
     Two reasons to end: the verifier was happy (state.verify_ok), or you've hit
     the iteration cap (state.iteration >= MAX_ITERATIONS). Otherwise, revise.
     """
-    raise NotImplementedError("Implement in Phase 3")
+    if state.verify_ok or state.iteration >= MAX_ITERATIONS:
+        return "end"
+    return "revise"
 
 
 # ---- Graph wiring -----------------------------------------------------
