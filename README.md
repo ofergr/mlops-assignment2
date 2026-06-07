@@ -48,6 +48,89 @@ If done with curiosity, this assignment will bring you tons of knowledge about h
 
 ---
 
+## Local Mac bootstrap
+
+This repo can be debugged locally on macOS before moving to the Nebius H100.
+That local path is for agent wiring, dataset preparation, and observability.
+The final `vLLM` serving run for the assignment still belongs on Linux with the
+real H100.
+
+### Local prerequisites
+
+- `python3.12`
+- Docker Desktop
+- Ollama
+
+### Create the local environment
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+If you want `uv` locally as well:
+
+```bash
+.venv/bin/pip install uv
+```
+
+### Local debug model
+
+The handoff uses Ollama for local smoke tests:
+
+```bash
+ollama pull qwen2.5-coder:3b
+```
+
+Then set `.env` for local Ollama debugging:
+
+```env
+HF_TOKEN=
+VLLM_BASE_URL=http://localhost:11434/v1
+VLLM_MODEL=qwen2.5-coder:3b
+OPENAI_API_KEY=ollama
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=http://localhost:3001
+```
+
+### Local data and observability
+
+```bash
+.venv/bin/python scripts/load_data.py
+docker compose up -d
+```
+
+### Local smoke test flow
+
+Start the agent:
+
+```bash
+.venv/bin/uvicorn agent.server:app --host 127.0.0.1 --port 8001
+```
+
+Then run:
+
+```bash
+curl -X POST http://127.0.0.1:8001/answer \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the coordinates location of the circuits for Australian grand prix?","db":"formula_1","tags":{"phase":"mac_smoke","backend":"ollama"}}'
+```
+
+Expected shape:
+
+- `generate_sql -> verify -> revise -> verify`
+- final SQL should return `DISTINCT lat, lng`
+
+### Notes
+
+- `requirements.txt` skips `vllm` on macOS because local Mac setup is only for
+  debug work; the actual serving stack runs on Nebius.
+- The source of truth for the full assignment remains the cloud VM flow in the
+  sections below.
+
 
 ## Phase 0 (Setup)
 
