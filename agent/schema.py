@@ -16,7 +16,10 @@ DB_DIR = ROOT / "data" / "bird"
 
 
 def db_path(db_id: str) -> Path:
-    return DB_DIR / f"{db_id}.sqlite"
+    path = (DB_DIR / f"{db_id}.sqlite").resolve()
+    if not str(path).startswith(str(DB_DIR.resolve())):
+        raise ValueError(f"Invalid db_id: {db_id!r}")
+    return path
 
 
 def _q(ident: str) -> str:

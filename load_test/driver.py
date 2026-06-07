@@ -66,7 +66,7 @@ async def drive(args: argparse.Namespace) -> None:
     results: list[dict] = []
     interval = 1.0 / args.rps
 
-    connector = aiohttp.TCPConnector(limit=0)
+    connector = aiohttp.TCPConnector(limit=100)
     async with aiohttp.ClientSession(connector=connector) as session:
         start = time.monotonic()
         deadline = start + args.duration

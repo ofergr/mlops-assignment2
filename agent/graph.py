@@ -55,14 +55,12 @@ class AgentState:
     history: list[dict[str, Any]] = field(default_factory=list)
 
 
-def llm() -> ChatOpenAI:
-    """Chat client pointed at VLLM_BASE_URL (your local vLLM by default)."""
-    return ChatOpenAI(
-        model=VLLM_MODEL,
-        base_url=VLLM_BASE_URL,
-        api_key=LLM_API_KEY,
-        temperature=0.0,
-    )
+_llm = ChatOpenAI(
+    model=VLLM_MODEL,
+    base_url=VLLM_BASE_URL,
+    api_key=LLM_API_KEY,
+    temperature=0.0,
+)
 
 
 # ---- Nodes ------------------------------------------------------------
@@ -135,7 +133,7 @@ def generate_sql_node(state: AgentState) -> dict:
     This node is wired and ready; fill in GENERATE_SQL_SYSTEM / GENERATE_SQL_USER
     in prompts.py to make it produce real queries.
     """
-    response = llm().invoke([
+    response = _llm.invoke([
         ("system", prompts.GENERATE_SQL_SYSTEM),
         ("user", prompts.GENERATE_SQL_USER.format(
             schema=state.schema,
@@ -169,7 +167,7 @@ def verify_node(state: AgentState) -> dict:
     in the README.
     """
     execution_text = state.execution.render() if state.execution else "No execution result."
-    response = llm().invoke([
+    response = _llm.invoke([
         ("system", prompts.VERIFY_SYSTEM),
         ("user", prompts.VERIFY_USER.format(
             schema=state.schema,
@@ -207,7 +205,7 @@ def revise_node(state: AgentState) -> dict:
     Return: {"sql": <str>, "iteration": state.iteration + 1, ...}.
     """
     execution_text = state.execution.render() if state.execution else "No execution result."
-    response = llm().invoke([
+    response = _llm.invoke([
         ("system", prompts.REVISE_SYSTEM),
         ("user", prompts.REVISE_USER.format(
             schema=state.schema,

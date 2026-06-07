@@ -34,8 +34,14 @@ class ExecutionResult:
         return f"OK: {self.row_count} rows.\nCOLUMNS: {cols}\nFIRST ROWS:\n{preview}{more}"
 
 
+MAX_RESULT_ROWS = 10_000  # safety cap to avoid loading huge results into memory
+
+
 def execute_sql(db_id: str, sql: str, timeout_seconds: float = 5.0) -> ExecutionResult:
-    """Run SQL against db_id's sqlite, return result or error."""
+    """Run SQL against db_id's sqlite, return result or error.
+
+    Row count is capped at MAX_RESULT_ROWS to prevent unbounded memory use.
+    """
     path = db_path(db_id)
     try:
         with sqlite3.connect(
@@ -45,7 +51,7 @@ def execute_sql(db_id: str, sql: str, timeout_seconds: float = 5.0) -> Execution
         ) as conn:
             cur = conn.execute(sql)
             cols = [d[0] for d in cur.description] if cur.description else []
-            rows = cur.fetchall()
+            rows = cur.fetchmany(MAX_RESULT_ROWS)
             return ExecutionResult(ok=True, rows=rows, columns=cols, row_count=len(rows))
     except Exception as e:  # noqa: BLE001
         return ExecutionResult(ok=False, error=f"{type(e).__name__}: {e}")

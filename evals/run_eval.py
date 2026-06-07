@@ -18,6 +18,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+import httpx
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_EVAL_FILE = ROOT / "evals" / "eval_set.jsonl"
 DEFAULT_OUT_FILE = ROOT / "results" / "eval_baseline.json"
@@ -56,8 +58,6 @@ def matches(gold_rows: list[tuple] | None, pred_rows: list[tuple] | None) -> boo
 
 def eval_one(question: dict, agent_url: str) -> dict:
     """Score one question. Return a dict capturing per-iteration correctness."""
-    import httpx
-
     payload = {
         "question": question["question"],
         "db": question["db_id"],
