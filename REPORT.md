@@ -82,11 +82,23 @@ test question about Australian Grand Prix circuit coordinates: the first SQL
 returned duplicate rows, the verifier caught that, and the revise step fixed it
 by adding `DISTINCT`.
 
+The agent graph uses a `verify -> revise` loop with a maximum of 3 total
+generate/revise attempts. The verifier was written to catch common obvious
+failures such as SQL execution errors, duplicate answer rows, and cases where a
+question asks for coordinates but the SQL does not actually return
+latitude/longitude columns.
+
 ## Tuning log
 
 I used Grafana plus the request outcomes to guide the tuning rounds. I also had
 to fix some setup and code issues on the VM before the actual tuning results
 were meaningful.
+
+The Grafana dashboard I used during tuning included request concurrency,
+end-to-end latency, lifecycle latency, throughput, request token sizes, KV
+cache pressure, and prefix cache hit rate. I used those panels to decide
+whether the next problem looked more like queueing, prompt-size pressure, KV
+pressure, or a bad serving-parameter choice.
 
 | Iteration | What I saw | What I thought was happening | What I changed | Result |
 |---|---|---|---|---|
